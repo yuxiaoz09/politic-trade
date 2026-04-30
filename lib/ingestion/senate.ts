@@ -1,7 +1,12 @@
 import { daysAgo } from '../utils'
 import { normalizeSenateTrade, NormalizedTrade, NormalizedPolitician } from './normalize'
 
-const SENATE_SEARCH = 'https://efts.senate.gov/LATEST/search-index'
+// Known Senate eFD endpoints to try in order
+const SENATE_ENDPOINTS = [
+  'https://efts.senate.gov/LATEST/search-index',
+  'https://efs.senate.gov/efds/api/search-index',
+  'https://financial.senate.gov/api/search-index',
+]
 
 interface SenateResult {
   trades: NormalizedTrade[]
@@ -21,24 +26,38 @@ export async function fetchSenatePTR(lookbackDays = 7): Promise<SenateResult> {
     category: 'ptr',
   })
 
-  const url = `${SENATE_SEARCH}?${params}`
-  console.log(`[senate] Fetching ${url}`)
+  for (const base of SENATE_ENDPOINTS) {
+    const url = `${base}?${params}`
+    console.log(`[senate] Trying ${url}`)
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(15_000),
+      })
 
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'politic-trade/1.0 (public data aggregator)',
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(20_000),
-  })
+      if (!res.ok) {
+        console.warn(`[senate] ${base} returned ${res.status}`)
+        continue
+      }
 
-  if (!res.ok) {
-    throw new Error(`Senate eFD fetch failed: ${res.status}`)
+      const data = await res.json()
+      const hits: Record<string, unknown>[] = data?.hits?.hits ?? []
+      console.log(`[senate] Got ${hits.length} filings from ${base}`)
+
+      return parseSenateHits(hits, toDate)
+    } catch (e) {
+      console.error(`[senate] Error from ${base}:`, (e as Error).message)
+    }
   }
 
-  const data = await res.json()
-  const hits: Record<string, unknown>[] = data?.hits?.hits ?? []
+  console.warn('[senate] All endpoints failed — returning empty result')
+  return { trades: [], politicians: [], lastSeenDate: toDate }
+}
 
+function parseSenateHits(hits: Record<string, unknown>[], lastSeenDate: string): SenateResult {
   const trades: NormalizedTrade[] = []
   const politicians: NormalizedPolitician[] = []
   const seenPoliticians = new Set<string>()
@@ -54,24 +73,20 @@ export async function fetchSenatePTR(lookbackDays = 7): Promise<SenateResult> {
       filing_url: src.link ? `https://efts.senate.gov${src.link}` : '',
     }
 
-    // Transactions are nested inside each filing
     const transactions: Record<string, unknown>[] = Array.isArray(src.transactions) ? src.transactions : []
     for (const tx of transactions) {
       const raw: Record<string, string> = {}
-      for (const [k, v] of Object.entries(tx as Record<string, unknown>)) {
-        raw[k] = String(v ?? '')
-      }
+      for (const [k, v] of Object.entries(tx as Record<string, unknown>)) raw[k] = String(v ?? '')
 
       const result = normalizeSenateTrade(raw, filingMeta)
-      if (result) {
-        trades.push(result.trade)
-        if (!seenPoliticians.has(result.politician.id)) {
-          politicians.push(result.politician)
-          seenPoliticians.add(result.politician.id)
-        }
+      if (!result) continue
+      trades.push(result.trade)
+      if (!seenPoliticians.has(result.politician.id)) {
+        politicians.push(result.politician)
+        seenPoliticians.add(result.politician.id)
       }
     }
   }
 
-  return { trades, politicians, lastSeenDate: toDate }
+  return { trades, politicians, lastSeenDate }
 }

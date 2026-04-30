@@ -4,6 +4,14 @@ import { normalizeHouseTrade, NormalizedTrade, NormalizedPolitician } from './no
 
 const HOUSE_BASE = 'https://disclosures.house.gov/public_disc/ptr-pdfs'
 
+// Browser-like headers that the House Clerk allows
+const HOUSE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Referer': 'https://disclosures.house.gov/FinancialDisclosure',
+}
+
 interface HouseResult {
   trades: NormalizedTrade[]
   politicians: NormalizedPolitician[]
@@ -12,28 +20,29 @@ interface HouseResult {
 
 export async function fetchHousePTR(): Promise<HouseResult> {
   const year = getCurrentYear()
-  const url = `${HOUSE_BASE}/${year}FDptr.zip`
 
-  console.log(`[house] Fetching ${url}`)
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'politic-trade/1.0 (public data aggregator)' },
-    signal: AbortSignal.timeout(30_000),
-  })
-
-  if (!res.ok) {
-    // Try previous year as fallback
-    const prevUrl = `${HOUSE_BASE}/${year - 1}FDptr.zip`
-    console.warn(`[house] ${year} not found, trying ${year - 1}`)
-    const prevRes = await fetch(prevUrl, { headers: { 'User-Agent': 'politic-trade/1.0' }, signal: AbortSignal.timeout(30_000) })
-    if (!prevRes.ok) throw new Error(`House PTR fetch failed: ${res.status}`)
-    return parseHouseZip(await prevRes.arrayBuffer())
+  for (const y of [year, year - 1]) {
+    const url = `${HOUSE_BASE}/${y}FDptr.zip`
+    console.log(`[house] Trying ${url}`)
+    try {
+      const res = await fetch(url, {
+        headers: HOUSE_HEADERS,
+        signal: AbortSignal.timeout(45_000),
+      })
+      if (res.ok) {
+        console.log(`[house] Got ${y} PTR zip (${res.headers.get('content-length')} bytes)`)
+        return parseHouseZip(await res.arrayBuffer())
+      }
+      console.warn(`[house] ${y} returned ${res.status}`)
+    } catch (e) {
+      console.error(`[house] Fetch error for ${y}:`, e)
+    }
   }
 
-  return parseHouseZip(await res.arrayBuffer())
+  throw new Error('[house] All PTR zip URLs failed')
 }
 
 async function parseHouseZip(buffer: ArrayBuffer): Promise<HouseResult> {
-  // Dynamically import unzipper only on server
   const { default: unzipper } = await import('unzipper')
   const { Readable } = await import('stream')
 
@@ -49,24 +58,19 @@ async function parseHouseZip(buffer: ArrayBuffer): Promise<HouseResult> {
       .pipe(unzipper.Parse())
       .on('entry', (entry: import('unzipper').Entry) => {
         const fileName = entry.path
-        if (!fileName.endsWith('.xml')) {
-          entry.autodrain()
-          return
-        }
+        if (!fileName.endsWith('.xml')) { entry.autodrain(); return }
 
         const chunks: Buffer[] = []
         entry.on('data', (chunk: Buffer) => chunks.push(chunk))
         entry.on('end', () => {
           try {
-            const xml = Buffer.concat(chunks).toString('utf-8')
-            const parsed = parseHouseXML(xml)
+            const parsed = parseHouseXML(Buffer.concat(chunks).toString('utf-8'))
             for (const result of parsed) {
-              if (result) {
-                trades.push(result.trade)
-                if (!seenPoliticians.has(result.politician.id)) {
-                  politicians.push(result.politician)
-                  seenPoliticians.add(result.politician.id)
-                }
+              if (!result) continue
+              trades.push(result.trade)
+              if (!seenPoliticians.has(result.politician.id)) {
+                politicians.push(result.politician)
+                seenPoliticians.add(result.politician.id)
               }
             }
           } catch (e) {
@@ -83,18 +87,16 @@ function parseHouseXML(xml: string) {
   const parser = new XMLParser({ ignoreAttributes: false, parseAttributeValue: true })
   const doc = parser.parse(xml)
 
-  // Different XML schemas exist; try common structures
-  const disclosures = doc?.FinancialDisclosure?.Transactions?.Transaction
-    ?? doc?.NewDataSet?.Financial_Disclosure
-    ?? doc?.Transactions?.Transaction
-    ?? []
+  const disclosures =
+    doc?.FinancialDisclosure?.Transactions?.Transaction ??
+    doc?.NewDataSet?.Financial_Disclosure ??
+    doc?.Transactions?.Transaction ??
+    []
 
   const arr = Array.isArray(disclosures) ? disclosures : [disclosures]
   return arr.map((item: Record<string, unknown>) => {
     const raw: Record<string, string> = {}
-    for (const [k, v] of Object.entries(item)) {
-      raw[k] = String(v ?? '')
-    }
+    for (const [k, v] of Object.entries(item)) raw[k] = String(v ?? '')
     return normalizeHouseTrade(raw)
   })
 }

@@ -4,5 +4,11 @@
   "installCommand": "npm install",
   "env": {
     "DATABASE_URL": "file:/tmp/politic-trade.db"
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 14 * * *"
+    }
+  ]
 }
