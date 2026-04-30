@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { Suspense } from 'react'
 import { getPoliticianById } from '@/lib/db/queries/politicians'
 import { getTrades } from '@/lib/db/queries/trades'

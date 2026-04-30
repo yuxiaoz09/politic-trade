@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { Suspense } from 'react'
 import { getPoliticians } from '@/lib/db/queries/politicians'
 import { PoliticianCard } from '@/components/politicians/PoliticianCard'

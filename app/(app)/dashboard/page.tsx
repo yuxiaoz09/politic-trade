@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { Suspense } from 'react'
 import { StatsBar } from '@/components/dashboard/StatsBar'
 import { RecentTradesWidget } from '@/components/dashboard/RecentTradesWidget'
